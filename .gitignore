@@ -1,0 +1,32 @@
+# --- Confidential data: NEVER commit unpublished papers or their derived data ---
+data/confidential/
+data/embeddings_cache/confidential/
+
+# --- Environment / secrets ---
+.env
+*.key
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Vector store / DB local files ---
+data/chroma_db/
+*.sqlite3
+
+# --- Node / frontend (for later) ---
+node_modules/
+frontend/dist/
+frontend/.env
+
+# --- OS/editor ---
+.DS_Store
+.vscode/
+*.log
