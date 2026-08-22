@@ -76,13 +76,13 @@ def get_author_by_scholar_id(scholar_id: str) -> dict:
 
     raw_content = results[0].get("raw_content", "")
 
-    prompt = _PARSE_PROMPT_TEMPLATE.format(content=raw_content[:15000])  # cap length
+    prompt = _PARSE_PROMPT_TEMPLATE.format(content=raw_content[:6000])  
 
     response = _groq_client.chat.completions.create(
-        model=settings.groq_model,
+        model=settings.groq_extraction_model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.1,
-        max_tokens=8000,  # reasoning models "think" before answering -- needs headroom
+        max_tokens=2000,  # reasoning models "think" before answering -- needs headroom
     )
 
     raw_text = response.choices[0].message.content or "{}"

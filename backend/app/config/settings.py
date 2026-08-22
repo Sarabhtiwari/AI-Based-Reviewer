@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_model: str = "qwen/qwen3.6-27b"
     tavily_api_key: str | None = None
-
+    groq_extraction_model: str = "openai/gpt-oss-20b"
     # --- Local paths ---
     data_raw_dir: Path = BACKEND_ROOT / "data" / "raw"
     data_processed_dir: Path = BACKEND_ROOT / "data" / "processed"
