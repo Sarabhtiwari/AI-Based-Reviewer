@@ -5,7 +5,7 @@ pydantic-settings==2.5.2
 httpx==0.27.2
 openai==1.51.0
 sentence-transformers==3.1.1
-transformers==4.4   3.3
+transformers==4.43.3
 adapters==1.0.0
 chromadb==0.5.5
 python-dotenv==1.0.1
