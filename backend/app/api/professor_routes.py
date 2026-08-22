@@ -13,6 +13,8 @@ from app.connectors.google_scholars import get_author_by_scholar_id
 from app.connectors.semantic_scholars import enrich_papers_with_abstracts
 from app.nlp.keyword_extraction import extract_keywords_for_papers
 from app.nlp.expertise_profile import build_expertise_profile
+from app.embeddings.paper_embedder import embed_papers_for_professor
+from app.vectorstore.chroma_client import add_professor_papers
 
 router = APIRouter(prefix="/professor", tags=["professor"])
 
@@ -44,4 +46,28 @@ def get_professor_expertise(scholar_id: str):
     return {
         "profile": profile,
         "papers": papers,
+    }
+
+@router.post("/{scholar_id}/index")
+def index_professor(scholar_id: str):
+    """
+    Fetches a professor's public papers, embeds them, and stores the
+    vectors in ChromaDB so they become searchable via /match/reviewers.
+    """
+    try:
+        author_data = get_author_by_scholar_id(scholar_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch Google Scholar profile: {e}")
+
+    papers = author_data.get("publications", [])
+    if not papers:
+        raise HTTPException(status_code=404, detail="No publications found for this scholar ID")
+
+    papers = embed_papers_for_professor(papers)
+    add_professor_papers(author_data["name"], scholar_id, papers)
+
+    return {
+        "professor_name": author_data["name"],
+        "scholar_id": scholar_id,
+        "papers_indexed": len(papers),
     }
