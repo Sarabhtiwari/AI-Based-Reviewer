@@ -1,21 +1,14 @@
 """
 FastAPI routes for confidential paper -> reviewer matching.
-
-Ties together: local confidential-paper embedding (SPECTER2, no network)
-and ChromaDB similarity search against stored professor paper vectors.
-
-NOTE: this endpoint does NOT store or index the confidential paper's
-title/abstract anywhere except in local memory during the request --
-only its vector is used to query ChromaDB, and nothing about the
-confidential paper is persisted to disk or sent externally.
 """
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.embeddings.specter2_local import embed_text
-from app.vectorstore.chroma_client import find_matching_professors
-
+from app.nlp.conflict_check import parse_coauthor_ids, has_conflict
+from app.connectors.google_scholars import resolve_author_ids_by_names
+from app.vectorstore.chroma_client import find_matching_professors, get_professor_coauthor_ids
 router = APIRouter(prefix="/match", tags=["matching"])
 
 
@@ -23,6 +16,10 @@ class MatchRequest(BaseModel):
     title: str = Field(..., description="Title of the confidential paper")
     abstract: str = Field("", description="Abstract of the confidential paper (optional but recommended)")
     top_k: int = Field(5, ge=1, le=50, description="Number of top reviewer matches to return")
+    author_names: list[str] = Field(
+        default_factory=list,
+        description="Names of the confidential paper's own authors, used for conflict-of-interest checking"
+    )
 
 
 class MatchResult(BaseModel):
@@ -30,6 +27,7 @@ class MatchResult(BaseModel):
     scholar_id: str
     matched_paper_title: str
     similarity_score: float
+    conflict_flag: bool
 
 
 class MatchResponse(BaseModel):
@@ -38,15 +36,6 @@ class MatchResponse(BaseModel):
 
 @router.post("/reviewers", response_model=MatchResponse)
 def match_reviewers(request: MatchRequest):
-    """
-    Given a confidential paper's title (and optionally abstract), embeds
-    it locally (never leaves the machine) and returns the top_k most
-    similar professors based on their public paper vectors already
-    stored in ChromaDB.
-
-    Professors must already be indexed via the professor expertise
-    endpoint (or the indexing step) before they can appear as matches here.
-    """
     try:
         query_vector = embed_text(request.title, request.abstract)
     except ValueError as e:
@@ -60,4 +49,12 @@ def match_reviewers(request: MatchRequest):
             detail="No professors indexed yet. Index at least one professor's papers first."
         )
 
-    return MatchResponse(matches=[MatchResult(**m) for m in raw_matches])
+    paper_author_ids = set(resolve_author_ids_by_names(request.author_names))
+
+    results = []
+    for m in raw_matches:
+        m.pop("coauthor_ids", None)  # no longer used per-match
+        reviewer_coauthor_ids = get_professor_coauthor_ids(m["scholar_id"])
+        conflict = has_conflict(paper_author_ids, reviewer_coauthor_ids)
+        results.append(MatchResult(**m, conflict_flag=conflict))
+    return MatchResponse(matches=results)

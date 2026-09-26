@@ -1,16 +1,12 @@
 """
 Extracts research keywords/topics from a professor's PUBLIC papers using
-Groq's API. Falls back to using the title when the abstract is missing
-(common for Google Scholar-sourced papers where abstracts aren't scraped).
-
-Why this is safe to send to a cloud API:
-This module must ONLY ever be called with text from already-published,
-public papers. It must NEVER be called with text from the confidential
-unpublished paper -- that stays local, handled separately in app/embeddings/.
+Groq's API. Falls back to using the title when the abstract is missing.
 """
 
 import re
+import time
 from openai import OpenAI
+import json
 from app.config.settings import settings
 
 _client = OpenAI(
@@ -35,13 +31,7 @@ def _strip_think_tags(text: str) -> str:
 
 
 def extract_keywords(title: str, abstract: str = "", max_keywords: int | None = None) -> list[str]:
-    """
-    Takes a paper's title (required) and abstract (optional) and returns
-    a list of keyword strings. Uses the abstract when available for
-    richer extraction; falls back to title-only otherwise.
-    """
     text = abstract.strip() if abstract and abstract.strip() else title.strip()
-
     if not text:
         return []
 
@@ -49,7 +39,7 @@ def extract_keywords(title: str, abstract: str = "", max_keywords: int | None = 
     prompt = _PROMPT_TEMPLATE.format(max_keywords=max_keywords, text=text)
 
     response = _client.chat.completions.create(
-        model=settings.groq_extraction_model,  # non-reasoning model, fast + cheap
+        model=settings.groq_extraction_model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.2,
         max_tokens=300,
@@ -61,14 +51,55 @@ def extract_keywords(title: str, abstract: str = "", max_keywords: int | None = 
     return keywords
 
 
-def extract_keywords_for_papers(papers: list[dict]) -> list[dict]:
+def extract_keywords_for_papers(papers: list[dict], batch_size: int = 10) -> list[dict]:
     """
-    Batch version: takes a list of paper dicts (each with 'title' and
-    optionally 'abstract' keys) and adds a 'keywords' key to each one.
+    Processes papers in batches -- one Groq call per batch instead of
+    one per paper -- to drastically cut total request count and time.
     """
-    for paper in papers:
-        paper["keywords"] = extract_keywords(
-            title=paper.get("title", ""),
-            abstract=paper.get("abstract", ""),
+    for batch_start in range(0, len(papers), batch_size):
+        batch = papers[batch_start:batch_start + batch_size]
+        print(f"[keywords] batch {batch_start//batch_size + 1}: papers {batch_start+1}-{batch_start+len(batch)}")
+
+        numbered_papers = "\n\n".join(
+            f"[{i}] Title: {p.get('title','')}\nAbstract: {p.get('abstract','') or '(none)'}"
+            for i, p in enumerate(batch)
         )
+
+        prompt = f"""For each numbered paper below, extract {settings.max_keywords_per_paper} concise research keywords/topics (2-4 words each).
+
+Return ONLY valid JSON, this exact shape, nothing else:
+{{"0": ["keyword1", "keyword2", ...], "1": [...], ...}}
+
+Papers:
+{numbered_papers}
+"""
+
+        for attempt in range(2):
+            try:
+                response = _client.chat.completions.create(
+                    model=settings.groq_extraction_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.2,
+                    max_tokens=2500,
+                )
+                raw = _strip_think_tags(response.choices[0].message.content or "{}")
+                json_match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+                result = json.loads(json_match.group(0) if json_match else raw)
+
+                for i, paper in enumerate(batch):
+                    paper["keywords"] = result.get(str(i), [])
+                break
+            except Exception as e:
+                print(f"[keywords ERROR] batch failed: {e}")
+                if "rate_limit" in str(e).lower() or "429" in str(e):
+                    time.sleep(5 * (attempt + 1))
+                    continue
+                for paper in batch:
+                    paper["keywords"] = []
+                break
+        else:
+            for paper in batch:
+                paper["keywords"] = []
+
+        time.sleep(2)  # pace between batches
     return papers

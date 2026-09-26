@@ -42,7 +42,9 @@ def add_professor_papers(professor_name: str, scholar_id: str, papers: list[dict
     for i, paper in enumerate(papers):
         if "embedding" not in paper:
             continue  # skip papers that weren't embedded (e.g. empty text)
-
+        coauthor_ids = ",".join(
+            c["authorId"] for c in paper.get("coauthors", []) if c.get("authorId")
+        )
         ids.append(f"{scholar_id}_{i}")
         embeddings.append(paper["embedding"])
         metadatas.append({
@@ -50,6 +52,7 @@ def add_professor_papers(professor_name: str, scholar_id: str, papers: list[dict
             "scholar_id": scholar_id,
             "title": paper.get("title", ""),
             "year": str(paper.get("year", "")),
+            "coauthor_ids": coauthor_ids,
         })
         documents.append(paper.get("title", ""))
 
@@ -88,6 +91,26 @@ def find_matching_professors(query_embedding: list[float], top_k: int = 10) -> l
             "scholar_id": results["metadatas"][0][i]["scholar_id"],
             "matched_paper_title": results["metadatas"][0][i]["title"],
             "similarity_score": 1 - distance,  # cosine distance -> similarity
+            "coauthor_ids": results["metadatas"][0][i].get("coauthor_ids", ""),
         })
 
     return matches
+def get_professor_coauthor_ids(scholar_id: str) -> set[str]:
+    """
+    Returns the union of co-author IDs across ALL of this professor's
+    indexed papers -- used for conflict-of-interest checking, since a
+    conflict should be based on the professor's whole publication
+    history, not just the one paper that happened to match by topic.
+    """
+    results = _collection.get(
+        where={"scholar_id": scholar_id},
+        include=["metadatas"],
+    )
+
+    all_ids = set()
+    for metadata in results.get("metadatas", []):
+        ids_str = metadata.get("coauthor_ids", "")
+        if ids_str:
+            all_ids.update(cid.strip() for cid in ids_str.split(",") if cid.strip())
+
+    return all_ids

@@ -1,69 +1,45 @@
 """
-FastAPI routes for professor expertise discovery.
-
-Exposes the pipeline we've built (Google Scholar fetch -> abstract
-enrichment -> keyword extraction -> aggregation) as a real HTTP endpoint,
-so it can be called from a frontend or tested via Swagger docs instead
-of one-off scripts.
+FastAPI routes for professor expertise discovery and indexing.
 """
+
 import time
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
-from app.connectors.google_scholars import get_author_by_scholar_id
-from app.connectors.semantic_scholars import enrich_papers_with_abstracts
+from app.connectors.google_scholars import get_full_professor_data
 from app.nlp.keyword_extraction import extract_keywords_for_papers
 from app.nlp.expertise_profile import build_expertise_profile
 from app.embeddings.paper_embedder import embed_papers_for_professor
 from app.vectorstore.chroma_client import add_professor_papers
-from pydantic import BaseModel  
 
 router = APIRouter(prefix="/professor", tags=["professor"])
-
-class BatchIndexRequest(BaseModel):
-    scholar_ids: list[str]
-
-
-class BatchIndexResult(BaseModel):
-    scholar_id: str
-    status: str  # "success" or "failed"
-    professor_name: str | None = None
-    papers_indexed: int | None = None
-    error: str | None = None
-
-
-class BatchIndexResponse(BaseModel):
-    results: list[BatchIndexResult]
-
 
 
 @router.get("/{scholar_id}/expertise")
 def get_professor_expertise(scholar_id: str):
     """
-    Given a Google Scholar ID, runs the full public-data pipeline and
-    returns an aggregated expertise profile for that professor.
-
-    Example: GET /professor/RwCZSW4AAAAJ/expertise
+    Given a Google Scholar ID, fetches the professor's full profile
+    (via Semantic Scholar, disambiguated by paper-title matching) and
+    returns an aggregated expertise profile.
     """
-    try:
-        author_data = get_author_by_scholar_id(scholar_id)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch Google Scholar profile: {e}")
+    author_data = get_full_professor_data(scholar_id)
+
+    if author_data.get("error"):
+        raise HTTPException(status_code=404, detail=author_data["error"])
 
     papers = author_data.get("publications", [])
     if not papers:
         raise HTTPException(status_code=404, detail="No publications found for this scholar ID")
 
-    papers = enrich_papers_with_abstracts(papers)
     papers = extract_keywords_for_papers(papers)
-
     profile = build_expertise_profile(author_data.get("name", "Unknown"), papers)
 
-    # Return the profile plus the raw per-paper breakdown, useful for
-    # debugging/demo -- the frontend can choose to show only the summary.
     return {
         "profile": profile,
+        "semantic_scholar_author_id": author_data.get("semantic_scholar_author_id"),
         "papers": papers,
     }
+
 
 @router.post("/{scholar_id}/index")
 def index_professor(scholar_id: str):
@@ -71,10 +47,10 @@ def index_professor(scholar_id: str):
     Fetches a professor's public papers, embeds them, and stores the
     vectors in ChromaDB so they become searchable via /match/reviewers.
     """
-    try:
-        author_data = get_author_by_scholar_id(scholar_id)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch Google Scholar profile: {e}")
+    author_data = get_full_professor_data(scholar_id)
+
+    if author_data.get("error"):
+        raise HTTPException(status_code=404, detail=author_data["error"])
 
     papers = author_data.get("publications", [])
     if not papers:
@@ -86,26 +62,47 @@ def index_professor(scholar_id: str):
     return {
         "professor_name": author_data["name"],
         "scholar_id": scholar_id,
+        "semantic_scholar_author_id": author_data.get("semantic_scholar_author_id"),
         "papers_indexed": len(papers),
     }
+
+
+class BatchIndexRequest(BaseModel):
+    scholar_ids: list[str]
+
+
+class BatchIndexResult(BaseModel):
+    scholar_id: str
+    status: str
+    professor_name: str | None = None
+    papers_indexed: int | None = None
+    error: str | None = None
+
+
+class BatchIndexResponse(BaseModel):
+    results: list[BatchIndexResult]
+
 
 @router.post("/index-batch", response_model=BatchIndexResponse)
 def index_professors_batch(request: BatchIndexRequest):
     """
-    Indexes multiple professors given a list of Google Scholar IDs --
-    e.g. the reviewer list your teacher provides. Processes one at a
-    time (not parallel) to stay within Tavily/Groq rate limits, and
-    continues even if individual professors fail (bad ID, no papers,
-    API hiccup), reporting per-professor status rather than aborting
-    the whole batch on one failure.
+    Indexes multiple professors given a list of Google Scholar IDs.
     """
     results = []
 
     for scholar_id in request.scholar_ids:
         try:
-            author_data = get_author_by_scholar_id(scholar_id)
-            papers = author_data.get("publications", [])
+            author_data = get_full_professor_data(scholar_id)
 
+            if author_data.get("error"):
+                results.append(BatchIndexResult(
+                    scholar_id=scholar_id,
+                    status="failed",
+                    error=author_data["error"],
+                ))
+                continue
+
+            papers = author_data.get("publications", [])
             if not papers:
                 results.append(BatchIndexResult(
                     scholar_id=scholar_id,
@@ -131,6 +128,6 @@ def index_professors_batch(request: BatchIndexRequest):
                 error=str(e),
             ))
 
-        time.sleep(2)  # pacing between professors -- avoid hammering Tavily/Groq
+        time.sleep(1)  # pacing between professors -- Semantic Scholar rate limit
 
-    return BatchIndexResponse(results=results)
+    return BatchIndexResponse(results=results)  

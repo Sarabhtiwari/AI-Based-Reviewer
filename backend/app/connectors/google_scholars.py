@@ -1,55 +1,24 @@
 """
-Fetches a professor's Google Scholar publication list.
+Fetches a professor's full academic profile, given only a Google Scholar ID.
 
-Two-part approach, deliberately split by reliability needs:
+Flow:
+1. Fetch name + paper titles directly from the Google Scholar HTML page
+   (deterministic regex parsing, no AI/scraping-tool needed)
+2. Search Semantic Scholar by name -- since names can collide, disambiguate
+   by checking which candidate's papers overlap with the titles from step 1
+3. Once confirmed, fetch the FULL data (papers + abstracts + co-authors)
+   from Semantic Scholar using the disambiguated author ID
 
-1. NAME: fetched via a direct HTTP request to the profile page and parsed
-   from a fixed HTML location (Google Scholar always renders the profile
-   owner's name inside a <div id="gsc_prf_in">). This is deterministic --
-   no guessing involved, so it's always correct.
-
-2. PUBLICATIONS: fetched via Tavily (cleans/extracts page text) and parsed
-   by a Groq LLM, since the publication table's structure varies more and
-   benefits from an LLM's ability to handle messy/inconsistent formatting.
-
-Why not use the LLM for the name too: an earlier version let the model
-guess the profile owner's name from co-author frequency in the raw text,
-which produced a DIFFERENT (wrong) name on a repeated run for the same
-scholar_id. Names must be extracted deterministically, not inferred.
+This replaces the earlier Tavily+Groq scraping approach: Semantic Scholar
+gives abstracts and co-authors directly, so no separate enrichment step
+or AI parsing is needed anymore.
 """
 
-import json
 import re
+import time
 import httpx
-from tavily import TavilyClient
-from openai import OpenAI
 from app.config.settings import settings
 
-_tavily_client = TavilyClient(api_key=settings.tavily_api_key)
-
-_groq_client = OpenAI(
-    api_key=settings.groq_api_key,
-    base_url=settings.groq_base_url,
-)
-
-_PARSE_PUBLICATIONS_PROMPT = """The text below is raw content scraped from a
-Google Scholar profile page. Extract ONLY the list of publications (ignore
-any names of people -- the name is handled separately).
-
-Return ONLY valid JSON in this exact shape, nothing else -- no preamble,
-no markdown code fences, no explanation, no <think> tags:
-
-{{
-  "publications": [
-    {{"title": "string", "year": "string or null", "abstract": "string or empty"}}
-  ]
-}}
-
-Raw page content:
-{content}
-"""
-
-# Google blocks requests without a browser-like User-Agent header.
 _BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -58,79 +27,228 @@ _BROWSER_HEADERS = {
 }
 
 
-def _strip_think_tags(text: str) -> str:
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+def _get_semantic_scholar(url: str, params: dict, max_retries: int = 3):
+    """Rate-limit-safe GET for Semantic Scholar (1 req/sec limit)."""
+    headers = {}
+    if settings.semantic_scholar_api_key:
+        headers["x-api-key"] = settings.semantic_scholar_api_key
+
+    for attempt in range(max_retries):
+        response = httpx.get(url, params=params, headers=headers, timeout=30.0)
+        time.sleep(1.1)  # always pace, even after success
+
+        if response.status_code == 200:
+            return response
+        if response.status_code == 429:
+            time.sleep(3 * (attempt + 1))
+            continue
+        return response
+
+    return response
 
 
 def _fetch_scholar_name(scholar_id: str) -> str:
-    """
-    Directly fetches the Google Scholar profile page HTML and extracts the
-    profile owner's name from the fixed <div id="gsc_prf_in"> element.
-    Deterministic -- no LLM guessing involved.
-    """
+    """Deterministically extracts the profile owner's name from Google Scholar's HTML."""
     profile_url = f"https://scholar.google.com/citations?user={scholar_id}&hl=en"
-
     response = httpx.get(profile_url, headers=_BROWSER_HEADERS, timeout=30.0)
     response.raise_for_status()
-    html = response.text
 
-    match = re.search(r'<div id="gsc_prf_in">(.*?)</div>', html)
+    match = re.search(r'<div id="gsc_prf_in">(.*?)</div>', response.text)
     if not match:
         return "Unknown"
 
-    # Strip any nested HTML tags from the matched name text
-    name = re.sub(r"<[^>]+>", "", match.group(1)).strip()
-    return name or "Unknown"
+    return re.sub(r"<[^>]+>", "", match.group(1)).strip() or "Unknown"
 
 
-def _fetch_publications_via_tavily(scholar_id: str) -> list[dict]:
+def _fetch_scholar_paper_titles(scholar_id: str, max_papers: int = 100) -> list[str]:
     """
-    Uses Tavily to fetch the profile page content, then Groq to parse
-    just the publications list out of the raw scraped text.
+    Deterministically extracts paper titles from Google Scholar's HTML.
+    Titles sit inside <a class="gsc_a_at">Title Here</a> elements on the
+    profile page -- a fixed, predictable structure, no AI parsing needed.
     """
-    profile_url = f"https://scholar.google.com/citations?user={scholar_id}&hl=en"
-
-    tavily_result = _tavily_client.extract(urls=[profile_url])
-    results = tavily_result.get("results", [])
-    if not results:
-        raise ValueError(f"Tavily returned no content for scholar_id={scholar_id}")
-
-    raw_content = results[0].get("raw_content", "")
-    prompt = _PARSE_PUBLICATIONS_PROMPT.format(content=raw_content[:6000])
-
-    response = _groq_client.chat.completions.create(
-        model=settings.groq_extraction_model,  # non-reasoning model -- faster, fits token limits
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-        max_tokens=2000,
+    profile_url = (
+        f"https://scholar.google.com/citations?user={scholar_id}"
+        f"&hl=en&cstart=0&pagesize={max_papers}"
     )
+    response = httpx.get(profile_url, headers=_BROWSER_HEADERS, timeout=30.0)
+    response.raise_for_status()
 
-    raw_text = response.choices[0].message.content or "{}"
-    cleaned_text = _strip_think_tags(raw_text)
-
-    json_match = re.search(r"\{.*\}", cleaned_text, flags=re.DOTALL)
-    json_candidate = json_match.group(0) if json_match else cleaned_text
-
-    try:
-        parsed = json.loads(json_candidate)
-    except json.JSONDecodeError as e:
-        raise ValueError(
-            f"Could not parse model output as JSON. Raw output was:\n{cleaned_text}"
-        ) from e
-
-    return parsed.get("publications", [])
+    titles = re.findall(r'<a[^>]*class="gsc_a_at"[^>]*>(.*?)</a>', response.text)
+    return [re.sub(r"<[^>]+>", "", t).strip() for t in titles if t.strip()]
 
 
-def get_author_by_scholar_id(scholar_id: str) -> dict:
+def find_author_id_by_name_and_papers(
+    name: str, known_paper_titles: list[str], min_overlap: int = 3
+) -> str | None:
+    if not name or not name.strip():
+        return None
+
+    clean_name = re.sub(r"^(Dr\.?|Prof\.?)\s+", "", name.strip(), flags=re.IGNORECASE)
+
+    url = f"{settings.semantic_scholar_base_url}/author/search"
+    params = {"query": clean_name, "fields": "name,authorId,papers.title", "limit": 100}
+
+    response = _get_semantic_scholar(url, params)
+    if response.status_code != 200:
+        return None
+
+    candidates = response.json().get("data", [])
+    if not candidates:
+        return None
+
+    known_titles_lower = {t.lower().strip() for t in known_paper_titles}
+
+    best_match_id = None
+    best_match_score = 0
+
+    for candidate in candidates:
+        candidate_titles = {
+            p.get("title", "").lower().strip() for p in candidate.get("papers", [])
+        }
+        overlap = len(known_titles_lower & candidate_titles)
+
+        if overlap > best_match_score:
+            best_match_score = overlap
+            best_match_id = candidate.get("authorId")
+
+    if best_match_score < min_overlap:
+        return None
+
+    return best_match_id
+
+def find_author_id_via_paper_titles(name: str, known_paper_titles: list[str], sample_size: int = 8) -> str | None:
     """
-    Given a Google Scholar ID, returns the author's name (fetched
-    deterministically) and list of publications (fetched via Tavily + Groq).
+    More reliable alternative to name-search disambiguation: searches
+    Semantic Scholar for a SAMPLE of the professor's known papers by
+    exact title, and checks which Author ID appears consistently among
+    the paper's listed authors (matching the professor's name). This
+    works because paper-level author lists are already correctly
+    disambiguated by Semantic Scholar -- no separate guessing needed.
+    """
+    from collections import Counter
+
+    name_parts = set(re.sub(r"^(Dr\.?|Prof\.?)\s+", "", name, flags=re.IGNORECASE).lower().split())
+
+    id_votes = Counter()
+
+    sample_titles = known_paper_titles[:sample_size]
+
+    for title in sample_titles:
+        url = f"{settings.semantic_scholar_base_url}/paper/search"
+        params = {"query": title, "fields": "title,authors", "limit": 1}
+
+        response = _get_semantic_scholar(url, params)
+        if response.status_code != 200:
+            continue
+
+        results = response.json().get("data", [])
+        if not results:
+            continue
+
+        paper = results[0]
+        for author in paper.get("authors", []):
+            author_name_parts = set(author.get("name", "").lower().split())
+            # Check if this author's name shares meaningful overlap with our target name
+            if name_parts & author_name_parts:
+                aid = author.get("authorId")
+                if aid:
+                    id_votes[aid] += 1
+
+    if not id_votes:
+        return None
+
+    # Return the Author ID that showed up most consistently across the sample
+    best_id, best_count = id_votes.most_common(1)[0]
+
+    # Require it to have matched on at least 2 different papers to be confident
+    if best_count < 2:
+        return None
+
+    return best_id
+
+def get_full_professor_data(scholar_id: str) -> dict:
+    """
+    The main entry point: given a Google Scholar ID, returns the
+    professor's name, Semantic Scholar Author ID, and full paper list
+    (with abstracts and co-authors, each with their own Author IDs).
     """
     name = _fetch_scholar_name(scholar_id)
-    publications = _fetch_publications_via_tavily(scholar_id)
+    known_titles = _fetch_scholar_paper_titles(scholar_id)
+
+    author_id = find_author_id_via_paper_titles(name, known_titles)
+    if not author_id:
+        return {
+            "name": name,
+            "scholar_id": scholar_id,
+            "semantic_scholar_author_id": None,
+            "publications": [],
+            "error": "Could not confidently disambiguate this professor on Semantic Scholar",
+        }
+
+    url = f"{settings.semantic_scholar_base_url}/author/{author_id}/papers"
+    params = {"fields": "title,abstract,year,authors", "limit": 100}
+
+    response = _get_semantic_scholar(url, params)
+    papers_raw = response.json().get("data", []) if response.status_code == 200 else []
+
+    publications = []
+    for p in papers_raw:
+        coauthors = [
+            {"name": a.get("name"), "authorId": a.get("authorId")}
+            for a in p.get("authors", [])
+            if a.get("authorId") != author_id
+        ]
+        publications.append({
+            "title": p.get("title"),
+            "year": p.get("year"),
+            "abstract": p.get("abstract") or "",
+            "coauthors": coauthors,
+        })
 
     return {
         "name": name,
         "scholar_id": scholar_id,
+        "semantic_scholar_author_id": author_id,
         "publications": publications,
     }
+
+def find_author_id_by_name_simple(name: str) -> str | None:
+    """
+    Simple fallback resolver: given just a name (no known papers to
+    cross-check against -- e.g. a confidential paper's author), searches
+    Semantic Scholar and returns the FIRST matching author's ID.
+
+    Less precise than find_author_id_via_paper_titles() -- use this only
+    for the confidential paper's authors, where we don't have (and don't
+    want to expose) a list of their papers to disambiguate against.
+    """
+    if not name or not name.strip():
+        return None
+
+    clean_name = re.sub(r"^(Dr\.?|Prof\.?)\s+", "", name.strip(), flags=re.IGNORECASE)
+
+    url = f"{settings.semantic_scholar_base_url}/author/search"
+    params = {"query": clean_name, "fields": "name,authorId", "limit": 1}
+
+    response = _get_semantic_scholar(url, params)
+    if response.status_code != 200:
+        return None
+
+    results = response.json().get("data", [])
+    if not results:
+        return None
+
+    return results[0].get("authorId")
+
+
+def resolve_author_ids_by_names(names: list[str]) -> list[str]:
+    """
+    Resolves a list of confidential-paper author names to Semantic
+    Scholar author IDs, skipping any that couldn't be resolved.
+    """
+    ids = []
+    for name in names:
+        aid = find_author_id_by_name_simple(name)
+        if aid:
+            ids.append(aid)
+    return ids
