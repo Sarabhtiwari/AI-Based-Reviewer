@@ -57,7 +57,7 @@ def index_professor(scholar_id: str):
         raise HTTPException(status_code=404, detail="No publications found for this scholar ID")
 
     papers = embed_papers_for_professor(papers)
-    add_professor_papers(author_data["name"], scholar_id, papers)
+    add_professor_papers(author_data["name"], author_data["scholar_id"], papers)
 
     return {
         "professor_name": author_data["name"],
@@ -112,7 +112,7 @@ def index_professors_batch(request: BatchIndexRequest):
                 continue
 
             papers = embed_papers_for_professor(papers)
-            add_professor_papers(author_data["name"], scholar_id, papers)
+            add_professor_papers(author_data["name"], author_data["scholar_id"], papers)
 
             results.append(BatchIndexResult(
                 scholar_id=scholar_id,
