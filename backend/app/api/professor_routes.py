@@ -6,7 +6,7 @@ import time
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.connectors.google_scholars import get_full_professor_data
+from app.connectors.professor_profile import get_full_professor_data
 from app.nlp.keyword_extraction import extract_keywords_for_papers
 from app.nlp.expertise_profile import build_expertise_profile
 from app.embeddings.paper_embedder import embed_papers_for_professor

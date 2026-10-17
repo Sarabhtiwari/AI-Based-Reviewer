@@ -6,8 +6,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.embeddings.specter2_local import embed_text
-from app.nlp.conflict_check import parse_coauthor_ids, has_conflict
-from app.connectors.google_scholars import resolve_author_ids_by_names
+from app.nlp.conflict_check import has_conflict
+from app.connectors.semantic_scholar import resolve_author_ids_by_names
 from app.vectorstore.chroma_client import find_matching_professors, get_professor_coauthor_ids
 router = APIRouter(prefix="/match", tags=["matching"])
 
