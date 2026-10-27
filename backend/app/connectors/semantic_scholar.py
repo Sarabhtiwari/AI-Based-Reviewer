@@ -103,3 +103,11 @@ def find_author_id_by_name(name: str) -> str | None:
 def resolve_author_ids_by_names(names: list[str]) -> list[str]:
     ids = (find_author_id_by_name(n) for n in names)
     return [i for i in ids if i]
+
+def resolve_authors(names: list[str]) -> list[dict]:
+    """
+    Like resolve_author_ids_by_names, but reports every name, including the
+    ones that could not be found, so "not checked" is never hidden.
+    Returns [{"name": str, "authorId": str | None}, ...]
+    """
+    return [{"name": n, "authorId": find_author_id_by_name(n)} for n in names if n and n.strip()]
