@@ -3,6 +3,7 @@
 import re
 import time
 from collections import Counter
+from difflib import SequenceMatcher
 
 import httpx
 from app.config.settings import settings
@@ -29,6 +30,47 @@ def _get(url: str, params: dict, max_retries: int = 3):
 
 def _clean_name(name: str) -> str:
     return re.sub(r"^(Dr\.?|Prof\.?)\s+", "", name.strip(), flags=re.IGNORECASE)
+
+
+def _norm_title(title: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
+
+
+def filter_papers_by_titles(
+    papers: list[dict], known_titles: list[str], fuzzy_threshold: float = 0.92
+) -> dict:
+    """
+    Keep only S2 papers whose title matches one of the titles on the professor's
+    Scholar/ORCID list (exact after normalising, else fuzzy >= threshold).
+    match_percent = share of the known titles found among the S2 papers,
+    i.e. how well this S2 profile covers the professor's real list.
+    """
+    known = {n for n in (_norm_title(t) for t in known_titles) if n}
+    matched_known: set[str] = set()
+    kept, dropped = [], []
+
+    for paper in papers:
+        norm = _norm_title(paper.get("title"))
+        hit = None
+        if norm in known:
+            hit = norm
+        elif norm:
+            for k in known:
+                sm = SequenceMatcher(None, norm, k)
+                if sm.real_quick_ratio() >= fuzzy_threshold \
+                        and sm.quick_ratio() >= fuzzy_threshold \
+                        and sm.ratio() >= fuzzy_threshold:
+                    hit = k
+                    break
+        if hit:
+            matched_known.add(hit)
+            kept.append(paper)
+        else:
+            dropped.append(paper.get("title"))
+
+    pct = round(100 * len(matched_known) / len(known), 1) if known else 0.0
+    return {"papers": kept, "match_percent": pct,
+            "kept": len(kept), "dropped": len(dropped), "dropped_titles": dropped}
 
 
 def find_author_id_via_titles(
@@ -65,13 +107,14 @@ def fetch_author_papers(author_id: str, max_papers: int = 300) -> list[dict]:
     while offset < max_papers:
         response = _get(
             f"{_BASE}/author/{author_id}/papers",
-            {"fields": "title,abstract,year,authors", "limit": 100, "offset": offset},
+            {"fields": "paperId,title,abstract,year,authors", "limit": 100, "offset": offset},
         )
         if response is None or response.status_code != 200:
             break
         body = response.json()
         for p in body.get("data", []):
             publications.append({
+                "paper_id": p.get("paperId"),
                 "title": p.get("title"),
                 "year": p.get("year"),
                 "abstract": p.get("abstract") or "",
@@ -104,10 +147,7 @@ def resolve_author_ids_by_names(names: list[str]) -> list[str]:
     ids = (find_author_id_by_name(n) for n in names)
     return [i for i in ids if i]
 
+
 def resolve_authors(names: list[str]) -> list[dict]:
-    """
-    Like resolve_author_ids_by_names, but reports every name, including the
-    ones that could not be found, so "not checked" is never hidden.
-    Returns [{"name": str, "authorId": str | None}, ...]
-    """
+    """[{"name": ..., "authorId": id-or-None}, ...], one entry per input name."""
     return [{"name": n, "authorId": find_author_id_by_name(n)} for n in names if n and n.strip()]

@@ -1,6 +1,7 @@
 """
 Glue layer: turns a professor identifier (Google Scholar ID or ORCID) into a full profile.
-Both paths end the same way: find the Semantic Scholar author ID, then fetch their papers.
+Both paths end the same way: find the Semantic Scholar author ID, then fetch their papers,
+keeping only papers whose titles match the professor's own Scholar/ORCID list.
 The output shape is identical, so routes, embeddings and ChromaDB never change.
 """
 
@@ -8,6 +9,9 @@ import re
 from app.connectors import google_scholar, orcid, semantic_scholar
 
 _ORCID_PATTERN = re.compile(r"\d{4}-\d{4}-\d{4}-\d{3}[\dXx]")
+
+# Below this, the S2 profile is probably the wrong person or a mixed profile.
+MIN_MATCH_PERCENT = 30.0
 
 
 def _error(name, identifier, message):
@@ -46,9 +50,21 @@ def get_full_professor_data(identifier: str) -> dict:
     if not author_id:
         return _error(name, identifier, "Could not confidently match this professor on Semantic Scholar")
 
+    result = semantic_scholar.filter_papers_by_titles(
+        semantic_scholar.fetch_author_papers(author_id), titles
+    )
+    if not result["papers"] or result["match_percent"] < MIN_MATCH_PERCENT:
+        return _error(
+            name, identifier,
+            f"Semantic Scholar profile {author_id} matches only {result['match_percent']}% "
+            f"of the titles on this profile; refusing to index it",
+        )
+
     return {
         "name": name,
         "scholar_id": identifier,  # holds whichever ID was given
         "semantic_scholar_author_id": author_id,
-        "publications": semantic_scholar.fetch_author_papers(author_id),
+        "publications": result["papers"],
+        "match_percent": result["match_percent"],
+        "papers_dropped": result["dropped"],
     }
