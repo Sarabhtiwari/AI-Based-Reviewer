@@ -1,14 +1,18 @@
 """
 FastAPI routes for confidential paper -> reviewer matching.
+
+Similarity comes from ChromaDB; conflict of interest comes from the Neo4j graph.
+The confidential title/abstract is embedded locally and never leaves the machine.
+Only author IDs/names are looked up externally.
 """
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.embeddings.specter2_local import embed_text
-from app.nlp.conflict_check import check_conflict
 from app.connectors.semantic_scholar import resolve_authors
-from app.vectorstore.chroma_client import find_matching_professors, get_professor_coauthor_ids
+from app.vectorstore.chroma_client import find_matching_professors
+from app.graph.coi import check_conflicts
 
 router = APIRouter(prefix="/match", tags=["matching"])
 
@@ -17,9 +21,13 @@ class MatchRequest(BaseModel):
     title: str = Field(..., description="Title of the confidential paper")
     abstract: str = Field("", description="Abstract (optional but recommended)")
     top_k: int = Field(5, ge=1, le=50, description="Number of reviewers to return")
+    author_ids: list[str] = Field(
+        default_factory=list,
+        description="Semantic Scholar author IDs of the paper's authors (preferred, exact)",
+    )
     author_names: list[str] = Field(
         default_factory=list,
-        description="Names of the confidential paper's authors, for conflict checking",
+        description="Author names, used only as a fallback; searched on Semantic Scholar",
     )
 
 
@@ -30,6 +38,7 @@ class MatchResult(BaseModel):
     matched_papers: list[str]
     conflict_status: str            # "clear" | "conflict" | "unverified"
     conflict_reasons: list[str]
+    conflict_evidence: list[dict] = []
 
 
 class AuthorResolution(BaseModel):
@@ -71,15 +80,18 @@ def match_reviewers(request: MatchRequest):
 
     top = sorted(grouped.values(), key=lambda g: g["similarity_score"], reverse=True)[:request.top_k]
 
-    paper_authors = resolve_authors(request.author_names)
+    # IDs given directly are exact; names are resolved by search as a fallback
+    paper_authors = [{"name": i, "authorId": i} for i in request.author_ids]
+    paper_authors += resolve_authors(request.author_names)
 
     results = []
     for g in top:
-        verdict = check_conflict(
-            paper_authors,
-            set(get_professor_coauthor_ids(g["scholar_id"])),
-            reviewer_author_id=g["semantic_scholar_author_id"],
-        )
+        try:
+            verdict = check_conflicts(g["semantic_scholar_author_id"], paper_authors)
+        except Exception as e:  # e.g. Neo4j is down: report it, don't claim "clear"
+            verdict = {"status": "unverified",
+                       "reasons": [f"Conflict check failed: {e}"],
+                       "evidence": []}
         results.append(MatchResult(
             professor_name=g["professor_name"],
             scholar_id=g["scholar_id"],
@@ -87,6 +99,7 @@ def match_reviewers(request: MatchRequest):
             matched_papers=g["matched_papers"],
             conflict_status=verdict["status"],
             conflict_reasons=verdict["reasons"],
+            conflict_evidence=verdict["evidence"],
         ))
 
     return MatchResponse(
