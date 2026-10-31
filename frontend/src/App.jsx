@@ -1,122 +1,50 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useState } from "react";
+import MatchPage from "./pages/MatchPage.jsx";
+import IndexPage from "./pages/IndexPage.jsx";
+import ProfessorsPage from "./pages/ProfessorsPage.jsx";
+import ExpertisePage from "./pages/ExpertisePage.jsx";
+import GraphPage from "./pages/GraphPage.jsx";
 
-function App() {
-  const [count, setCount] = useState(0)
+const PAGES = [
+  ["match", "Match reviewers"],
+  ["index", "Index professors"],
+  ["professors", "Indexed professors"],
+  ["expertise", "Expertise"],
+  ["graph", "Collaboration graph"],
+];
+
+export default function App() {
+  const [nav, setNav] = useState({ page: "match", id: "" });
+  const go = (page, id = "") => setNav({ page, id });
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
+    <div className="min-h-screen md:grid md:grid-cols-[230px_1fr]">
+      <nav
+        aria-label="Main"
+        className="flex gap-1 overflow-x-auto bg-ink p-3 text-slate-200 md:sticky md:top-0 md:block md:h-screen md:px-4 md:py-7"
+      >
+        <div className="mb-7 hidden px-2 font-serif text-2xl font-semibold text-white md:block">
+          Reviewer Desk
         </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+        {PAGES.map(([key, label]) => (
+          <button
+            key={key}
+            aria-current={nav.page === key ? "page" : undefined}
+            onClick={() => go(key)}
+            className="w-full whitespace-nowrap rounded-md px-3 py-2.5 text-left hover:bg-white/10 aria-[current=page]:bg-white aria-[current=page]:font-semibold aria-[current=page]:text-ink md:block"
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
 
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+      <main className="max-w-5xl p-5 pb-16 md:px-11 md:py-9">
+        {nav.page === "match" && <MatchPage go={go} />}
+        {nav.page === "index" && <IndexPage go={go} />}
+        {nav.page === "professors" && <ProfessorsPage go={go} />}
+        {nav.page === "expertise" && <ExpertisePage key={nav.id} initialId={nav.id} />}
+        {nav.page === "graph" && <GraphPage key={nav.id} initialId={nav.id} />}
+      </main>
+    </div>
+  );
 }
-
-export default App

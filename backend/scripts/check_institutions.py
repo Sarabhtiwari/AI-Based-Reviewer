@@ -16,6 +16,7 @@ CASES = [
     ("Stanford University", "Stanford University School of Medicine", "possible"),
     ("Stanford University", "New York University", None),
     ("Indian Institute of Technology Bombay, Mumbai, India", "IIT Bombay", "possible"),
+    ("IIT Bombay", "Indian Institute ofTechnology Bombay", "same"),
 ]
 bad = 0
 for a, b, expected in CASES:

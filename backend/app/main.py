@@ -12,7 +12,8 @@ from app.api.professor_routes import router as professor_router
 from app.api.matching_routes import router as matching_router
 from app.graph.client import close_driver
 from app.graph.schema import init_schema
-
+from app.api.graph_routes import router as graph_router
+from fastapi.middleware.cors import CORSMiddleware
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -30,12 +31,18 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 ensure_directories()
 
 app.include_router(professor_router)
 app.include_router(matching_router)
-
+app.include_router(graph_router)
 
 @app.get("/")
 def root():

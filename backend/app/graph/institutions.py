@@ -29,6 +29,17 @@ _DROP = {"the", "of", "and", "for", "at", "in", "de", "la", "du", "des",
 # Words that are too common to prove two names are the same place.
 _GENERIC = {"university", "institute", "college", "school", "department", "faculty",
             "center", "centre", "laboratory", "lab", "research", "academy"}
+# Words that sometimes appear glued to a stop-word, e.g. "ofTechnology"
+_UNGLUE = {"technology", "science", "sciences", "engineering", "medicine", "management",
+           "education", "design", "arts", "health", "research", "applied", "information",
+           "computer", "business"}
+
+
+def _unglue(token: str) -> str:
+    for prefix in ("of", "the", "and", "for"):
+        if token.startswith(prefix) and token[len(prefix):] in _UNGLUE:
+            return token[len(prefix):]
+    return token
 
 
 def tokens(name: str | None) -> frozenset:
@@ -36,7 +47,8 @@ def tokens(name: str | None) -> frozenset:
     s = s.replace("&", " and ").replace(".", "")
     for pattern, repl in _ALIASES:
         s = re.sub(pattern, repl, s)
-    return frozenset(t for t in re.findall(r"[a-z0-9]+", s) if t not in _DROP)
+    found = (_unglue(t) for t in re.findall(r"[a-z0-9]+", s))
+    return frozenset(t for t in found if t not in _DROP)
 
 
 def key(name: str | None) -> str:
