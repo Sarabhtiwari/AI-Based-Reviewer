@@ -27,4 +27,8 @@ def fetch_profile(scholar_id: str, max_papers: int = 100) -> dict:
     raw_titles = re.findall(r'<a[^>]*class="gsc_a_at"[^>]*>(.*?)</a>', html)
     titles = [re.sub(r"<[^>]+>", "", t).strip() for t in raw_titles if t.strip()]
 
-    return {"name": name or None, "titles": titles}
+    aff = re.search(r'<div class="gsc_prf_il">(.*?)</div>', html, re.DOTALL)
+    affiliation = re.sub(r"<[^>]+>", "", aff.group(1)).strip() if aff else ""
+    institutions = [{"name": affiliation, "ror": None, "end_year": None}] if affiliation else []
+
+    return {"name": name or None, "titles": titles, "institutions": institutions}

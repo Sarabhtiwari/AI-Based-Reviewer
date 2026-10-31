@@ -67,4 +67,5 @@ def get_full_professor_data(identifier: str) -> dict:
         "publications": result["papers"],
         "match_percent": result["match_percent"],
         "papers_dropped": result["dropped"],
+        "institutions": profile.get("institutions", []),
     }

@@ -12,6 +12,8 @@ def get_driver():
         _driver = GraphDatabase.driver(
             settings.neo4j_uri,
             auth=(settings.neo4j_user, settings.neo4j_password),
+            max_connection_lifetime=200,   # recycle connections before Aura drops them
+            keep_alive=True,
         )
     return _driver
 
