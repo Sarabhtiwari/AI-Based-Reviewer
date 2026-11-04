@@ -1,5 +1,16 @@
 """
 FastAPI routes for professor expertise discovery and indexing.
+
+Every failure now carries a code, so the cause is clear:
+  ID_NOT_FOUND           ORCID / Scholar says this ID does not exist (typo or wrong ID)
+  NO_TITLES              ID exists but no name/titles (private or empty ORCID works, or Scholar blocked)
+  AUTHOR_NOT_IDENTIFIED  could not pick the author on Semantic Scholar
+  LOW_TITLE_MATCH        fetched profile does not match the person's own titles
+  SOURCE_UNAVAILABLE     ORCID / Google Scholar / Semantic Scholar not reachable or blocked
+  NO_MATCHING_PAPERS     Semantic Scholar author has no paper matching the own titles
+  NO_PUBLICATIONS        profile built but no papers left after filtering
+  PROFILE_ERROR          any other profile-building error (message has details)
+  INDEXING_FAILED        profile fine, but embedding or storing failed (server side)
 """
 
 import time
@@ -14,6 +25,46 @@ from app.vectorstore.chroma_client import add_professor_papers, _collection
 from app.graph.ingest import ingest_professor
 
 router = APIRouter(prefix="/professor", tags=["professor"])
+
+
+def _classify(message: str) -> tuple[str, int]:
+    """Guess the error type from the message text. Returns (code, http_status)."""
+    # These match the exact messages written in professor_profile.py
+    m = (message or "").lower()
+    if m.startswith("could not load profile"):
+        # the source answered "not found" -> the ID itself is wrong
+        if "404" in m or "not found" in m:
+            return "ID_NOT_FOUND", 404
+        # anything else: blocked, timeout, 403, 429, no connection
+        return "SOURCE_UNAVAILABLE", 502
+    if m.startswith("no name/titles found"):
+        return "NO_TITLES", 404
+    if m.startswith("could not confidently match"):
+        return "AUTHOR_NOT_IDENTIFIED", 422
+    if "refusing to index" in m or " matches only " in m:
+        return "LOW_TITLE_MATCH", 422
+    return "PROFILE_ERROR", 422
+
+
+_STATUS = {
+    "ID_NOT_FOUND": 404,
+    "NO_TITLES": 404,
+    "NO_MATCHING_PAPERS": 422,
+    "AUTHOR_NOT_IDENTIFIED": 422,
+    "LOW_TITLE_MATCH": 422,
+    "SOURCE_UNAVAILABLE": 502,
+}
+
+
+def _fail(author_data: dict):
+    """Use the exact code from professor_profile.py; fall back to guessing from the text."""
+    message = author_data["error"]
+    code = author_data.get("error_code")
+    if code in _STATUS:
+        status = _STATUS[code]
+    else:
+        code, status = _classify(message)
+    raise HTTPException(status_code=status, detail={"code": code, "message": message})
 
 
 def _index_one(author_data: dict) -> dict:
@@ -49,11 +100,13 @@ def get_professor_expertise(scholar_id: str):
     author_data = get_full_professor_data(scholar_id)
 
     if author_data.get("error"):
-        raise HTTPException(status_code=404, detail=author_data["error"])
+        _fail(author_data)
 
     papers = author_data.get("publications", [])
     if not papers:
-        raise HTTPException(status_code=404, detail="No publications found for this scholar ID")
+        raise HTTPException(status_code=404, detail={
+            "code": "NO_PUBLICATIONS",
+            "message": "No publications found for this ID"})
 
     papers = extract_keywords_for_papers(papers)
     profile = build_expertise_profile(author_data.get("name", "Unknown"), papers)
@@ -71,11 +124,18 @@ def index_professor(scholar_id: str):
     author_data = get_full_professor_data(scholar_id)
 
     if author_data.get("error"):
-        raise HTTPException(status_code=404, detail=author_data["error"])
+        _fail(author_data)
     if not author_data.get("publications"):
-        raise HTTPException(status_code=404, detail="No publications found for this ID")
+        raise HTTPException(status_code=404, detail={
+            "code": "NO_PUBLICATIONS",
+            "message": "Profile was built but no papers are left to index"})
 
-    return _index_one(author_data)
+    try:
+        return _index_one(author_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={
+            "code": "INDEXING_FAILED",
+            "message": f"Embedding or storing failed: {e}"})
 
 
 class BatchIndexRequest(BaseModel):
@@ -91,6 +151,7 @@ class BatchIndexResult(BaseModel):
     graph_coauthors: int | None = None
     graph_error: str | None = None
     error: str | None = None
+    error_code: str | None = None
 
 
 class BatchIndexResponse(BaseModel):
@@ -107,12 +168,14 @@ def index_professors_batch(request: BatchIndexRequest):
             author_data = get_full_professor_data(identifier)
 
             if author_data.get("error"):
+                code = author_data.get("error_code") or _classify(author_data["error"])[0]
                 results.append(BatchIndexResult(scholar_id=identifier, status="failed",
-                                                error=author_data["error"]))
+                                                error=author_data["error"], error_code=code))
                 continue
             if not author_data.get("publications"):
                 results.append(BatchIndexResult(scholar_id=identifier, status="failed",
-                                                error="No publications found"))
+                                                error="No publications found",
+                                                error_code="NO_PUBLICATIONS"))
                 continue
 
             out = _index_one(author_data)
@@ -127,7 +190,8 @@ def index_professors_batch(request: BatchIndexRequest):
                 graph_error=out["graph_error"],
             ))
         except Exception as e:
-            results.append(BatchIndexResult(scholar_id=identifier, status="failed", error=str(e)))
+            results.append(BatchIndexResult(scholar_id=identifier, status="failed",
+                                            error=str(e), error_code="INDEXING_FAILED"))
 
         time.sleep(1)
 

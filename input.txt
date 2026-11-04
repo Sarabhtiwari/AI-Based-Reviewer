@@ -1,0 +1,12 @@
+Twin Support Vector Machine with Adaptive Weighting for Imbalanced Classification
+
+Class imbalance degrades the accuracy of support vector machines because the decision boundary is biased toward the majority class. We propose an adaptive-weighted twin support vector machine that assigns larger penalties to minority samples near the class boundary and solves two smaller quadratic programming problems instead of one large problem. Experiments on benchmark imbalanced datasets show improved G-mean and F-measure over standard SVM and twin SVM, with lower training time.
+
+
+Schema-Aware Text-to-SQL Generation Using Pretrained Language Models
+
+Translating natural language questions into SQL queries lets non-expert users query relational databases. We present a schema-aware text-to-SQL model that links question words to table and column names and uses a pretrained language model to generate executable queries. The model handles nested queries and joins across multiple tables, and is evaluated on cross-domain benchmarks where the test databases are unseen during training.
+
+Cooperative Multi-Agent Reinforcement Learning with Shared Credit Assignment
+
+In cooperative multi-agent settings, agents share a team reward, which makes it hard to learn how much each agent contributed. We propose a credit assignment method that decomposes the team value function into per-agent values and trains agents with decentralised policies under centralised training. Experiments on cooperative control tasks show faster learning and higher team reward than independent learners.
