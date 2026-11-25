@@ -8,6 +8,8 @@ import unicodedata
 from datetime import date
 
 _ALIASES = [
+    (r"\bmnnit\b", "motilal nehru national institute of technology"),
+    (r"\bprayagraj\b", "allahabad"),  # same city, renamed in 2018
     (r"\biisc\b", "indian institute of science"),
     (r"\biiit\b", "indian institute of information technology"),
     (r"\biit\b", "indian institute of technology"),
@@ -29,17 +31,10 @@ _DROP = {"the", "of", "and", "for", "at", "in", "de", "la", "du", "des",
 # Words that are too common to prove two names are the same place.
 _GENERIC = {"university", "institute", "college", "school", "department", "faculty",
             "center", "centre", "laboratory", "lab", "research", "academy"}
-# Words that sometimes appear glued to a stop-word, e.g. "ofTechnology"
-_UNGLUE = {"technology", "science", "sciences", "engineering", "medicine", "management",
-           "education", "design", "arts", "health", "research", "applied", "information",
-           "computer", "business"}
 
-
-def _unglue(token: str) -> str:
-    for prefix in ("of", "the", "and", "for"):
-        if token.startswith(prefix) and token[len(prefix):] in _UNGLUE:
-            return token[len(prefix):]
-    return token
+# Place words that may be added to or left out of an institution's name
+# ("... Technology" vs "... Technology Allahabad"). Only used in compare().
+_PLACE_NOISE = {"allahabad", "india", "uttar", "pradesh"}
 
 
 def tokens(name: str | None) -> frozenset:
@@ -47,8 +42,7 @@ def tokens(name: str | None) -> frozenset:
     s = s.replace("&", " and ").replace(".", "")
     for pattern, repl in _ALIASES:
         s = re.sub(pattern, repl, s)
-    found = (_unglue(t) for t in re.findall(r"[a-z0-9]+", s))
-    return frozenset(t for t in found if t not in _DROP)
+    return frozenset(t for t in re.findall(r"[a-z0-9]+", s) if t not in _DROP)
 
 
 def key(name: str | None) -> str:
@@ -66,7 +60,14 @@ def compare(a: dict, b: dict) -> str | None:
         return "same"
     short, long_ = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
     distinct = short - _GENERIC
-    if distinct and distinct <= long_:
+    # A place word alone ("University of Allahabad") cannot identify an institution.
+    if not (distinct - _PLACE_NOISE):
+        return None
+    if distinct <= long_:
+        # Same name, the longer one only adds a place word (e.g. "Allahabad").
+        # Needs 3+ identifying words so a short or vague name cannot qualify.
+        if (long_ - short) <= _PLACE_NOISE and len(distinct) >= 3:
+            return "same"
         return "possible"
     return None
 

@@ -1,29 +1,68 @@
 """
-Manual check: run the profile pipeline for one professor and print the result.
-Run from the backend folder:  python -m scripts.check_profile RwCZSW4AAAAJ
+Shows how many titles each side has, and WHERE the missing ones live on Semantic Scholar.
+Run from the backend folder (PowerShell):
+    $env:PYTHONPATH = "."
+    python scripts/check_split_profile.py <ORCID or Scholar ID> <SEMANTIC_SCHOLAR_AUTHOR_ID>
+Example:
+    python scripts/check_split_profile.py 0000-0002-5467-3812 2284639276
 """
-
+import re
 import sys
-from app.connectors.professor_profile import get_full_professor_data
+from collections import Counter
+from difflib import SequenceMatcher
 
-identifier = sys.argv[1] if len(sys.argv) > 1 else "RwCZSW4AAAAJ"
+from app.connectors import semantic_scholar as ss
+from app.connectors.professor_profile import _normalize, MIN_MATCH_PERCENT
 
-r = get_full_professor_data(identifier)
+MAX_LOOKUPS = 30   # each lookup takes about 1.1 s
 
-print("name:", r.get("name"))
-print("s2 author id:", r.get("semantic_scholar_author_id"))
-print("error:", r.get("error"))
-print("match_percent:", r.get("match_percent"))
-print("papers_dropped:", r.get("papers_dropped"))
-print("papers kept:", len(r.get("publications", [])))
-for p in r.get("publications", [])[:10]:
-    print("-", p.get("paper_id"), "|", p.get("year"), "|", p.get("title"))
+identifier, s2_id = sys.argv[1], sys.argv[2]
+identifier, source = _normalize(identifier)
+src = source.__name__.split(".")[-1]
 
+profile = source.fetch_profile(identifier)
+titles = profile["titles"]
+print(f"1) OWN LIST ({src}): name={profile['name']!r}")
+print(f"   {len(titles)} distinct titles"
+      + ("  (Google Scholar: only the first 100 are read)" if src == "google_scholar" else ""))
 
-from app.connectors import semantic_scholar
-all_papers = semantic_scholar.fetch_author_papers("121948183")
-kept = {p["paper_id"] for p in r["publications"]}
-print("\nDROPPED:")
-for p in all_papers:
-    if p["paper_id"] not in kept:
-        print("-", p["year"], "|", p["title"])
+papers = ss.fetch_author_papers(s2_id)
+result = ss.filter_papers_by_titles(papers, titles)
+print(f"\n2) SEMANTIC SCHOLAR author {s2_id}: {len(papers)} papers on this one profile")
+print(f"   {result['kept']} of them are on your own list")
+print(f"   match = {result['match_percent']}% of your {len(titles)} titles (limit is {MIN_MATCH_PERCENT:.0f}%)")
+
+known = {ss._norm_title(p.get("title")) for p in result["papers"]}
+missing = [t for t in titles
+           if not any(SequenceMatcher(None, ss._norm_title(t), k).ratio() >= 0.92 for k in known)]
+print(f"\n3) {len(missing)} of your titles are NOT on profile {s2_id}.")
+if not missing:
+    sys.exit()
+
+surname = [w for w in re.findall(r"[a-z0-9]+", (profile["name"] or "").lower()) if len(w) >= 2][-1]
+where, not_found = Counter(), 0
+print(f"   Looking up up to {MAX_LOOKUPS} of them on Semantic Scholar (about {MAX_LOOKUPS} seconds)...\n")
+for t in missing[:MAX_LOOKUPS]:
+    r = ss._get(f"{ss._BASE}/paper/search", {"query": t, "fields": "title,authors", "limit": 1})
+    if r is None or r.status_code != 200:
+        print("   [no answer]", t[:70]); continue
+    data = r.json().get("data", [])
+    if not data or SequenceMatcher(None, ss._norm_title(data[0].get("title")), ss._norm_title(t)).ratio() < 0.85:
+        not_found += 1
+        print("   [not on Semantic Scholar]", t[:70]); continue
+    ids = [a["authorId"] for a in data[0].get("authors", [])
+           if a.get("authorId") and surname in ss._name_tokens(a.get("name"))]
+    for i in ids:
+        where[i] += 1
+    print(f"   found, same-surname author id(s) {ids}:", t[:60])
+
+print("\n4) RESULT")
+print(f"   not on Semantic Scholar at all : {not_found}")
+for i, n in where.most_common(5):
+    flag = "  <- the profile you used" if i == str(s2_id) else ""
+    print(f"   author id {i} holds {n} of the missing titles{flag}")
+others = [i for i, _ in where.most_common(5) if i != str(s2_id)]
+if others:
+    print("\n   Semantic Scholar has split this person into several profiles.")
+    print("   Open each id at semanticscholar.org/author/<id>; if they are the same person, index with:")
+    print(f"   {sys.argv[1]}={s2_id}+" + "+".join(others[:2]))
