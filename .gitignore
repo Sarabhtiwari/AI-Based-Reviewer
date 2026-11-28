@@ -20,6 +20,7 @@ venv/
 # --- Vector store / DB local files ---
 data/chroma_db/
 *.sqlite3
+backend/data/.chroma_snapshot.sha256
 
 # --- Node / frontend (for later) ---
 node_modules/

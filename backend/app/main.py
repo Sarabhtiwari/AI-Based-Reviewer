@@ -47,3 +47,10 @@ app.include_router(graph_router)
 @app.get("/")
 def root():
     return {"status": "ok", "message": "Reviewer Expertise Discovery API is running"}
+
+
+from app.vectorstore.snapshot_sync import sync_on_startup
+
+@app.on_event("startup")
+def _load_snapshot():
+    print("[snapshot]", sync_on_startup())

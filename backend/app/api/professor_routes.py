@@ -23,6 +23,7 @@ from app.nlp.expertise_profile import build_expertise_profile
 from app.embeddings.paper_embedder import embed_papers_for_professor
 from app.vectorstore.chroma_client import add_professor_papers, _collection
 from app.graph.ingest import ingest_professor
+from app.vectorstore.snapshot_sync import safe_export
 
 router = APIRouter(prefix="/professor", tags=["professor"])
 
@@ -131,7 +132,9 @@ def index_professor(scholar_id: str):
             "message": "Profile was built but no papers are left to index"})
 
     try:
-        return _index_one(author_data)
+        result = _index_one(author_data)
+        safe_export()
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail={
             "code": "INDEXING_FAILED",
@@ -194,7 +197,7 @@ def index_professors_batch(request: BatchIndexRequest):
                                             error=str(e), error_code="INDEXING_FAILED"))
 
         time.sleep(1)
-
+    safe_export()
     return BatchIndexResponse(results=results)
 
 
